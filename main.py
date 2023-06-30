@@ -1,3 +1,10 @@
+# ############################################################################## #
+# Created by Polterx, on Friday 30th of June, 2023                               #
+# Website https://poltersanctuary.com                                            #
+# ############################################################################## #
+# The script is in development mode, might not work as intended for every user   #
+# ############################################################################## #
+
 import argparse
 import json
 import os
