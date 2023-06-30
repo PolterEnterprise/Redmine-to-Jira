@@ -1,8 +1,14 @@
 # MigrationV2-Redmine-to-Jira
 
+
 ### How to run?
-``python ./main.py -arg 
-``
+```
+python ./main.py -arg 
+```
+### Missing Packages?
+```
+pip install -r requirements.txt
+```
 
 ### List of Available Arguments
 - -p, --project [Fetch issues for a specific project]
