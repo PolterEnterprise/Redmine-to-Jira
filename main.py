@@ -1,3 +1,9 @@
+# ############################################################################## #
+# Created by Polterx, on Saturday, 1st of July, 2023                             #
+# Website https://poltersanctuary.com                                            #
+# Github  https://github.com/PolterEnterprise                                    #
+# ############################################################################## #
+
 import argparse
 from utils._exporter import RedmineExporter
 from utils._logging import configure_logging
