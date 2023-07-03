@@ -2,6 +2,19 @@ import logging
 from logging.handlers import RotatingFileHandler
 import coloredlogs
 
+def configure_logging(debug_mode):
+    level = logging.DEBUG if debug_mode else logging.INFO
+    log_format = "[%(asctime)s] %(levelname)s %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+
+    logging.basicConfig(level=level, format=log_format, datefmt=datefmt)
+
+    if not debug_mode:
+        coloredlogs.install(level=level, fmt=log_format, datefmt=datefmt)
+    else:
+        # Disable coloredlogs if debug mode is enabled
+        coloredlogs.install(level=logging.INFO, fmt=log_format, datefmt=datefmt)
+
 def setup_logger(log_file):
     # Create a logger instance
     logger = logging.getLogger(__name__)
@@ -17,16 +30,7 @@ def setup_logger(log_file):
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
 
-    # Create a console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-
-    # Add handlers to the logger
+    # Add the file handler to the logger
     logger.addHandler(file_handler)
-    # logger.addHandler(console_handler)
-
-    # Apply colored output to the console
-    coloredlogs.install(level=logging.INFO, fmt=log_format, datefmt=log_date_format)
 
     return logger
