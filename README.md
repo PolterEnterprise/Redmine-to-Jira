@@ -1,7 +1,5 @@
 # MigrationV2-Redmine-to-Jira
 
-**YOU DO NOT HAVE PERMISSION TO MODIFY THIS PROJECT'S CORE FUNCTIONALITY WITHOUT A PROPER CONSENT**
-
 ### How to run?
 ```
 python ./main.py -arg 
@@ -37,4 +35,7 @@ ___
 - [ ] `memory implementation`
 - [ ] `refactoring`
 ___
+
+**YOU DO NOT HAVE PERMISSION TO MODIFY THIS PROJECT'S CORE FUNCTIONALITY WITHOUT A PROPER CONSENT**
+
 *(C) Polter Enterprise | All rights reserved! [Website](https://poltersanctuary.com). [Discord](https://discord.gg/eVvPpe7).*
