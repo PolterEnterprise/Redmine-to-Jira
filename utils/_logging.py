@@ -8,7 +8,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import coloredlogs
 
-def configure_logging(debug_mode):
+def configure_logging(debug_mode=False):
     level = logging.DEBUG if debug_mode else logging.INFO
     log_format = "[%(asctime)s] %(levelname)s %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
