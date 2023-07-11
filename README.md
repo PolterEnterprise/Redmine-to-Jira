@@ -10,6 +10,8 @@ pip install -r requirements.txt
 ```
 
 ### List of Available Arguments
+- -x, --activate-extraction [Activate and import already extracted issues]
+- -f, --filename [Specify the issues JSON file name for import]
 - -p, --project [Fetch issues for a specific project]
 - -a, --attachments [Export attachments] <- Feature Functionality still missing
 - -c, --comments [Export comments] <- Feature Functionality still missing
@@ -20,6 +22,7 @@ pip install -r requirements.txt
 ___
 *Features under development*:
 - [x] `importer class`
+- [x] `exporter class`
 - [ ] `ranges`
 - [ ] `threads`
 - [ ] `workers`
