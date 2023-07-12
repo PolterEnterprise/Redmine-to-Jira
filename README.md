@@ -20,7 +20,7 @@ pip install -r requirements.txt
 - -d, --debug [Enable debug mode (verbose logging)]
 
 ___
-*Features under development*:
+*Features*:
 - [x] `importer class`
 - [x] `exporter class`
 - [ ] `ranges`
