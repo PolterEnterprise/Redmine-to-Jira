@@ -1,10 +1,5 @@
-# ############################################################################## #
-# Created by Polterx, on Saturday, 1st of July, 2023                             #
-# Website https://poltersanctuary.com                                            #
-# Github  https://github.com/PolterEnterprise                                    #
-# ############################################################################## #
-
 import argparse
+
 from utils._logging import configure_logging
 from utils._exporter import RedmineExporter
 from utils._importer import JiraImporter
@@ -20,9 +15,8 @@ def main():
                         help="Fetch issues for a specific project")
     parser.add_argument("-a", "--attachments", action="store_true",
                         help="Export attachments")
-    parser.add_argument("-s", "--status", type=int,
-                        choices=[1, 2, 3, 4, 5, 6],
-                        help="Filter issues by status: 1 (new), 2 (in progress), 3 (resolved), 4 (feedback), 5 (closed), 6 (rejected)")
+    parser.add_argument("-s", "--status", type=int, choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+                        help="Filter issues by status: 1 (new), 2 (inprogress), 3 (resolved), 4 (feedback), 5 (closed), 6 (rejected), 7 (approved), 8 (won't fix), 9 (re-opened), 10 (in view), 11 (ready for testing)")
     parser.add_argument("-pr", "--priority", type=int,
                         choices=[1, 2, 3, 4, 5],
                         help="Filter issues by priority: 1 (low), 2 (normal), 3 (high), 4 (urgent), 5 (immediate)")
