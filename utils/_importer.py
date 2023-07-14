@@ -8,27 +8,33 @@ import os
 import sys
 import requests
 import json
+
 from requests.auth import HTTPBasicAuth
 
 from configparser import ConfigParser
 from utils._logging import setup_logger, configure_logging
 from utils._ratelimiter import RateLimiter
 
-# Jira specific exceptions
+
 class JiraExportError(Exception):
     pass
+
 
 class JiraAuthenticationError(JiraExportError):
     pass
 
+
 class JiraPermissionError(JiraExportError):
     pass
+
 
 class JiraNotFoundError(JiraExportError):
     pass
 
+
 class JiraAttachmentError(JiraExportError):
     pass
+
 
 class JiraImporter:
     def __init__(self):
@@ -44,14 +50,11 @@ class JiraImporter:
         self.attachments_dir = config.get('Importer', 'attachments_dir')
         self.rate_limit_delay = config.getint('Importer', 'rate_limit_delay')
 
-        # Configure logging
         self.logger = setup_logger(self.log_file)
         configure_logging()
 
-        # Configure rate limiter
-        self.rate_limiter = RateLimiter(self.rate_limit_delay)  # Adjust values as necessary
+        self.rate_limiter = RateLimiter(self.rate_limit_delay)
 
-        # Jira API Config
         self.auth = HTTPBasicAuth(self.jira_email, self.jira_api_key)
 
     def import_to_jira(self, issue_data):
