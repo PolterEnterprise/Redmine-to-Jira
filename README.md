@@ -36,7 +36,7 @@ ___
 - [ ] `appropriate abstractions`
 - [ ] `improvement of readability`
 - [x] `rate limiter optimization`
-- [ ] `memory implementation`
+- [x] `memory implementation`
 ___
 
 **YOU DO NOT HAVE PERMISSION TO MODIFY THIS PROJECT'S CORE FUNCTIONALITY WITHOUT A PROPER CONSENT**
