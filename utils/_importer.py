@@ -57,6 +57,14 @@ class JiraImporter:
 
         self.auth = HTTPBasicAuth(self.jira_email, self.jira_api_key)
 
+        self.priority_mappings = {
+            "(5) Low": "Lowest",
+            "(4) Normal": "Medium",
+            "(3) High": "High",
+            "(2) Urgent": "Highest",
+            "(1) Immediate": "Highest",
+        }
+
     def import_to_jira(self, issue_data):
         issue_data["issue"]["subject"] = issue_data["issue"]["subject"].encode('utf-8').decode()
         issue_data["issue"]["description"] = issue_data["issue"]["description"].encode('utf-8').decode()
@@ -75,17 +83,40 @@ class JiraImporter:
                     "name": issue_data["issue"]["author"]["name"]
                 },
                 "assignee": {
-                    "name": issue_data["issue"]["assigned_to"]["name"]
-                },
-                # "priority": {
-                #     "name": issue_data["issue"]["priority"]["name"]
-                # },
+                    "name": issue_data["issue"]["assigned_to"]["name"] if issue_data["issue"].get("assigned_to") else None
+                }
             }
         }
 
-        # If the issue data contains 'due_date' and it's not None, add it to the issue fields.
+        if issue_data["issue"].get("priority"):
+            old_priority_name = issue_data["issue"]["priority"]["name"]
+            # Use the priority_mappings dictionary to get the new name
+            new_priority_name = self.priority_mappings.get(old_priority_name, old_priority_name)
+            jira_issue["fields"]["priority"] = {
+                "name": new_priority_name
+            }
+
+        category = issue_data["issue"].get("category")
+        if category and "name" in category:
+            jira_issue["fields"]["labels"] = [category["name"]]
+        else:
+            # Handle the case when the category or name is missing
+            jira_issue["fields"]["labels"] = []
+
+        if issue_data["issue"].get("start_date"):
+            jira_issue["fields"]["customfield_10015"] = issue_data["issue"]["start_date"]
+
         if issue_data["issue"].get("due_date"):
             jira_issue["fields"]["duedate"] = issue_data["issue"]["due_date"]
+
+        if issue_data["issue"].get("created_on"):
+            jira_issue["fields"]["customfield_10061"] = issue_data["issue"]["created_on"]
+
+        if issue_data["issue"].get("updated_on"):
+            jira_issue["fields"]["customfield_10062"] = issue_data["issue"]["updated_on"]
+
+        if issue_data["issue"].get("closed_on"):
+            jira_issue["fields"]["customfield_10063"] = issue_data["issue"]["closed_on"]
 
         with self.rate_limiter:
             try:
@@ -135,10 +166,56 @@ class JiraImporter:
                         raise JiraAttachmentError(f"Uploading attachment failed for issue {issue_data['issue']['id']}") from e
 
     def import_issues(self, filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            for line in f:
-                issue_data = json.loads(line)
-                self.import_to_jira(issue_data)
+        checkpoint_file = "issue_progress.log"
+        start_from_checkpoint = False
+        checkpoint_id = 0
+
+        if os.path.isfile(checkpoint_file):
+            options = [
+                "\033[34m1\033[0m) Reset the data and start from scratch",
+                "\033[34m2\033[0m) Continue from the last saved progress",
+                "\033[90m3\033[0m) Exit and decide later what to do"
+            ]
+
+            user_choice = input(
+                f"The checkpoint file {checkpoint_file} already exists. What do you want to do?\n{', '.join(options)}\nEnter the corresponding number: "
+            )
+
+            if user_choice == "1":
+                os.remove(checkpoint_file)
+                self.logger.info(f"Deleted checkpoint file: {checkpoint_file}")
+            elif user_choice == "2":
+                with open(checkpoint_file, "r") as f:
+                    checkpoint_id = int(f.read())
+                start_from_checkpoint = True
+                self.logger.info(f"Resuming from issue index: {checkpoint_id}")
+            elif user_choice == "3":
+                self.logger.info("Exiting...")
+                return
+            else:
+                self.logger.info("Invalid choice. Exiting...")
+                return
+        # eline
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                for line_num, line in enumerate(f, 1):
+                    if start_from_checkpoint and line_num <= checkpoint_id:
+                        continue
+
+                    try:
+                        issue_data = json.loads(line)
+                        self.import_to_jira(issue_data)
+                    except Exception as e:
+                        self.logger.error("An error occurred during issue import: %s", str(e))
+                        self.logger.error("Skipping issue data: %s", line)
+
+                    checkpoint_id = line_num
+                    with open(checkpoint_file, "w") as f:
+                        f.write(str(checkpoint_id))
+        # eline
+        except KeyboardInterrupt:
+            self.logger.info("Script interrupted by user.")
+            sys.exit(0)
 
     def run(self, args):
         if args.project and not args.activate_extraction:
@@ -164,3 +241,4 @@ class JiraImporter:
 
         if args.activate_extraction:
             self.import_issues(args.filename)
+
