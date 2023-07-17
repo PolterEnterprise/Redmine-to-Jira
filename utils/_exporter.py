@@ -156,7 +156,7 @@ class RedmineExporter:
                 attachment_path = os.path.join(self.attachments_dir, str(issue_id))
                 os.makedirs(attachment_path, exist_ok=True)
 
-                # Download attachment using requests library
+                # Download attachment
                 attachment_response = requests.get(attachment_url, stream=True)
                 attachment_response.raise_for_status()
                 with open(os.path.join(attachment_path, attachment_filename), "wb") as file:
@@ -227,8 +227,9 @@ class RedmineExporter:
         }
 
         status_name = status_mapping.get(args.status, "any")
-        output_file = f"redmine_{status_name}_issues.json"
-        progress_file = f"redmine_{status_name}_progress.log"
+        project_name = args.project
+        output_file = f"{project_name}_{status_name}_issues.json"
+        progress_file = f"{project_name}_{status_name}_progress.log"
 
         if os.path.exists(output_file):
             options = [
