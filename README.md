@@ -27,6 +27,7 @@ ___
 - [ ] `threads`
 - [ ] `workers`
 - [ ] `chunks`
+- [x] `refined attachments`
 - [ ] `categorization`
 - [ ] `prioritization`
 - [x] `improved exception handling`
