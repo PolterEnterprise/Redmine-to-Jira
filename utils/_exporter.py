@@ -30,29 +30,31 @@ class RedminePermissionError(RedmineExportError):
 class RedmineNotFoundError(RedmineExportError):
     pass
 
-
 class RedmineExporter:
+    RESPONSE_CONTENT_TEMPLATE = "Response content: %s"
+
     def __init__(self):
         try:
             config = ConfigParser()
             config.read('config.ini')
 
             # Configuration
+            self.log_dir = config.get('General', 'log_dir')
+            self.log_file = config.get('General', 'log_file')
             self.redmine_url = config.get('Redmine', 'url')
             self.redmine_api_key = config.get('Redmine', 'api_key')
             self.attachments_dir = config.get('Exporter', 'attachments_dir')
-            self.projects_dir = config.get('Exporter', 'projects_dir')
-            self.log_file = config.get('Exporter', 'log_file')
             self.rate_limit_delay = config.getint('Exporter', 'rate_limit_delay')
             self.maximum_issues = config.getint('Exporter', 'maximum_issues')
+
+            self.rate_limiter = RateLimiter(self.rate_limit_delay)
+            self.logger = setup_logger('exporter', self.log_dir, self.log_file)
         except ConfigParser.NoSectionError as e:
             raise RedmineExportError(f"Error in configuration file: {str(e)}")
         except ConfigParser.NoOptionError as e:
             raise RedmineExportError(f"Missing required option in configuration file: {str(e)}")
         except Exception as e:
             raise RedmineExportError(f"Error reading configuration: {str(e)}")
-
-        self.logger = setup_logger(self.log_file)
 
         self.status_map = {
             1: '1',   # New issues (The issue is newly created and not yet assigned or in progress.)
@@ -361,14 +363,10 @@ class RedmineExporter:
     def setup_attachments_directory(self):
         os.makedirs(self.attachments_dir, exist_ok=True)
 
-    def setup_projects_directory(self):
-        os.makedirs(self.projects_dir, exist_ok=True)
-
     def run(self, args):
         configure_logging(args.debug)
 
         self.setup_attachments_directory()
-        self.setup_projects_directory()
 
         if not args.project:
             self.logger.info("No project specified.")
