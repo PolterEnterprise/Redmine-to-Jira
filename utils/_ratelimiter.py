@@ -5,25 +5,31 @@
 # ############################################################################## #
 
 import time
+import threading
 
 class RateLimiter:
     def __init__(self, delay):
         self.delay = delay
-        self.last_request_time = 0
+        self.lock = threading.Lock()
+        self.last_request_time = time.perf_counter()
 
     def wait(self):
-        elapsed_time = time.time() - self.last_request_time
-
-        if elapsed_time < self.delay:
-            time.sleep(self.delay - elapsed_time)
+        with self.lock:
+            try:
+                elapsed_time = time.perf_counter() - self.last_request_time
+                if elapsed_time < self.delay:
+                    remaining_time = self.delay - elapsed_time
+                    time.sleep(remaining_time)
+                self.last_request_time = time.perf_counter()
+            except Exception as e:
+                print(f"RateLimiter encountered an error: {e}")
+                raise
 
     def __enter__(self):
-        elapsed_time = time.time() - self.last_request_time
+        self.wait()
 
-        if elapsed_time < self.delay:
-            remaining_time = self.delay - elapsed_time
-            time.sleep(remaining_time)
-            self.last_request_time = time.time()
-
-    def __exit__(self, *args):
-        self.last_request_time = time.time()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            # print(f"RateLimiter encountered an error during exit: {exc_val}")
+            # return False to propagate the exception if it's KeyboardInterrupt
+            return False if exc_type is KeyboardInterrupt else True
