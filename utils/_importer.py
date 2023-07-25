@@ -40,25 +40,30 @@ class JiraImporter:
     RESPONSE_CONTENT_TEMPLATE = "Response content: %s"
     
     def __init__(self):
-        config = ConfigParser()
-        config.read('config.ini')
+        try:
+            config = ConfigParser()
+            config.read('config.ini')
 
-        # Configuration
-        self.log_file = config.get('Importer', 'log_file')
-        self.jira_url = config.get('Jira', 'url')
-        self.jira_email = config.get('Jira', 'email')
-        self.jira_api_key = config.get('Jira', 'api_key')
-        self.jira_project_key = config.get('Jira', 'project_key')
-        self.attachments_dir = config.get('Importer', 'attachments_dir')
-        self.projects_dir = config.get('Importer', 'projects_dir')
-        self.rate_limit_delay = config.getint('Importer', 'rate_limit_delay')
+            # Configuration
+            self.log_dir = config.get('General', 'log_dir')
+            self.log_file = config.get('General', 'log_file')
+            self.jira_url = config.get('Jira', 'url')
+            self.jira_email = config.get('Jira', 'email')
+            self.jira_api_key = config.get('Jira', 'api_key')
+            self.jira_project_key = config.get('Jira', 'project_key')
+            self.attachments_dir = config.get('Importer', 'attachments_dir')
+            self.rate_limit_delay = config.getint('Importer', 'rate_limit_delay')
 
-        self.logger = setup_logger(self.log_file)
-        configure_logging()
+            self.auth = HTTPBasicAuth(self.jira_email, self.jira_api_key)
 
-        self.rate_limiter = RateLimiter(self.rate_limit_delay)
-
-        self.auth = HTTPBasicAuth(self.jira_email, self.jira_api_key)
+            self.rate_limiter = RateLimiter(self.rate_limit_delay)
+            self.logger = setup_logger('importer', self.log_dir, self.log_file)
+        except ConfigParser.NoSectionError as e:
+            raise JiraExportError(f"Error in configuration file: {str(e)}")
+        except ConfigParser.NoOptionError as e:
+            raise JiraExportError(f"Missing required option in configuration file: {str(e)}")
+        except Exception as e:
+            raise JiraExportError(f"Error reading configuration: {str(e)}")
 
         # will be removed in future updates
         self.priority_mappings = {
@@ -76,6 +81,31 @@ class JiraImporter:
             "closed_on": "customfield_10077",
             "estimated_hours": "customfield_10078"
         }
+
+        self.fields_mappings = {
+            "1": {"field": "start_date", "mapping": "customfield_10015"},
+            "2": {"field": "due_date", "mapping": "duedate"},
+            "3": {"field": "created_on", "mapping": "customfield_10075"},
+            "4": {"field": "updated_on", "mapping": "customfield_10076"},
+            "5": {"field": "closed_on", "mapping": "customfield_10077"},
+            "6": {"field": "estimated_hours", "mapping": "customfield_10078"}
+        }
+
+        # will be removed in future updates
+        # self.status_mappings = {
+        #     "New": "1",
+        #     "In Progress": "2",
+        #     "Ready For Testing": "3",
+        #     "Feedback": "4",
+        #     "Closed": "5",
+        #     "Rejected": "6",
+        #     "Approved": "7",
+        #     "Re-Opened": "8",
+        #     "Won't Fix": "9",
+        #     "On Hold": "10",
+        #     "In Review": "11"
+        # }
+
 
     def get_field_id(self, field_name):
         response = requests.get(f"{self.jira_url}field", auth=self.auth)
@@ -112,6 +142,16 @@ class JiraImporter:
         else:
             self.logger.error(f"Failed to fetch user data: {response.content}")
             return None
+
+    def get_transition_id(self, issue_key, target_status):
+        transitions_url = f"{self.jira_url}issue/{issue_key}/transitions"
+        transitions_response = requests.get(transitions_url, auth=self.auth)
+        transitions_response.raise_for_status()
+        transitions = transitions_response.json().get('transitions', [])
+        for transition in transitions:
+            if transition['to']['name'].lower() == target_status.lower():
+                return transition['id']
+        return None
 
     def log_response_content(self, response):
         self.logger.error(JiraImporter.RESPONSE_CONTENT_TEMPLATE, response.content.decode())
@@ -245,8 +285,6 @@ class JiraImporter:
                     self.logger.error("Could not decode JSON response: %s", response.text)
                     return
 
-                self.logger.info(f"Successfully created issue {issue_data['issue']['id']} in JIRA with key {jira_issue_key}")
-
                 # upload attachments
                 if issue_data.get("attachments"):
                     self.upload_attachments_to_issue(jira_issue_key, issue_data)
@@ -257,24 +295,26 @@ class JiraImporter:
                         self.upload_journal_comment_to_issue(journal, jira_issue_key)
 
                 # Transform the status after the issue is created
-                status_id = issue_data["issue"]["status"]["id"]
-                transformed_status_id = max(0, status_id - 1)
-                if status_id == 1:
-                    self.logger.warning(f"No status was assigned for issue {issue_data['issue']['id']} in the original system.")
-                if transformed_status_id >= 0:
+                status_name = issue_data["issue"]["status"]["name"]
+                transition_id = self.get_transition_id(jira_issue_key, status_name)
+                if transition_id is None:
+                    self.logger.error(f"No transition found to status {status_name} for issue: {issue_data['issue']['id']}")
+                else:
                     status_url = f"{self.jira_url}issue/{jira_issue_key}/transitions"
                     transition_payload = {
                         "transition": {
-                            "id": transformed_status_id
+                            "id": transition_id
                         }
                     }
                     transition_response = requests.post(status_url, auth=self.auth, json=transition_payload)
                     try:
                         transition_response.raise_for_status()
-                        self.logger.info(f"Status transformed successfully for issue {issue_data['issue']['id']}")
+                        self.logger.info(f"Status transformed successfully for issue: {issue_data['issue']['id']}")
                     except requests.HTTPError as e:
-                        self.logger.error(f"Failed to transform status for issue {issue_data['issue']['id']}: {str(e)}")
-                        self.logger.error("Response content: %s", e.response.content.decode())
+                        self.logger.error(f"Failed to transform status for issue: {issue_data['issue']['id']}: {str(e)}")
+                        self.logger.error(f"Response content: {e.response.content.decode()}")
+
+                self.logger.info(f"Successfully created issue {issue_data['issue']['id']} in JIRA with key {jira_issue_key}")
 
             except requests.HTTPError as e:
                 if e.response.status_code == 401:
