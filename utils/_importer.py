@@ -8,15 +8,23 @@ import os
 import sys
 import requests
 import json
+import html
+import copy
+import mimetypes
 
 from requests.auth import HTTPBasicAuth
+from html import escape
 
-from configparser import ConfigParser
+from configparser import ConfigParser, NoSectionError, NoOptionError
 from utils._logging import setup_logger, configure_logging
 from utils._ratelimiter import RateLimiter
 
 
 class JiraExportError(Exception):
+    pass
+
+
+class JiraBadRequestError(JiraExportError):
     pass
 
 
@@ -32,80 +40,117 @@ class JiraNotFoundError(JiraExportError):
     pass
 
 
+class JiraRequestTimeoutError(JiraExportError):
+    pass
+
+
+class JiraTooManyRequestsError(JiraExportError):
+    pass
+
+
+class JiraServerError(JiraExportError):
+    pass
+
+
 class JiraAttachmentError(JiraExportError):
     pass
 
 
 class JiraImporter:
     RESPONSE_CONTENT_TEMPLATE = "Response content: %s"
-    
+
     def __init__(self):
         try:
             config = ConfigParser()
             config.read('config.ini')
 
-            # Configuration
-            self.log_dir = config.get('General', 'log_dir')
-            self.log_file = config.get('General', 'log_file')
-            self.jira_url = config.get('Jira', 'url')
-            self.jira_email = config.get('Jira', 'email')
-            self.jira_api_key = config.get('Jira', 'api_key')
-            self.jira_project_key = config.get('Jira', 'project_key')
-            self.attachments_dir = config.get('Importer', 'attachments_dir')
-            self.rate_limit_delay = config.getint('Importer', 'rate_limit_delay')
+            config_params = {
+                "log_dir": {"section": "General", "key": "log_dir"},
+                "log_file": {"section": "General", "key": "log_file"},
+                "rate_limit": {"section": "General", "key": "rate_limit"},
+                "jira_url": {"section": "Jira", "key": "url"},
+                "jira_email": {"section": "Jira", "key": "email"},
+                "jira_api_key": {"section": "Jira", "key": "api_key"},
+                "jira_project_key": {"section": "Jira", "key": "project_key"},
+                "attachments_dir": {"section": "Importer", "key": "attachments_dir"},
+                "allowed_file_types": {"section": "Importer", "key": "allowed_file_types"},
+                "maximum_file_size": {"section": "Importer", "key": "maximum_file_size"},
+            }
+
+            for attribute, params in config_params.items():
+                config_value = config.get(params["section"], params["key"])
+                if attribute == "allowed_file_types":
+                    setattr(self, attribute, config_value.split(','))
+                else:
+                    setattr(self, attribute, config_value)
 
             self.auth = HTTPBasicAuth(self.jira_email, self.jira_api_key)
-
-            self.rate_limiter = RateLimiter(self.rate_limit_delay)
+            self.rate_limiter = RateLimiter(delay=float(self.rate_limit))
             self.logger = setup_logger('importer', self.log_dir, self.log_file)
-        except ConfigParser.NoSectionError as e:
+
+        except NoSectionError as e:
             raise JiraExportError(f"Error in configuration file: {str(e)}")
-        except ConfigParser.NoOptionError as e:
+        except NoOptionError as e:
             raise JiraExportError(f"Missing required option in configuration file: {str(e)}")
         except Exception as e:
             raise JiraExportError(f"Error reading configuration: {str(e)}")
 
-        # will be removed in future updates
-        self.priority_mappings = {
-            "(5) Low": "Lowest",
-            "(4) Normal": "Medium",
-            "(3) High": "High",
-            "(2) Urgent": "Highest",
-            "(1) Immediate": "Highest",
-        }
-
-        # will be removed in future updates
-        self.field_mappings = {
-            "created_on": "customfield_10075",
-            "updated_on": "customfield_10076",
-            "closed_on": "customfield_10077",
-            "estimated_hours": "customfield_10078"
-        }
-
+        # for patch v1.0.4
         self.fields_mappings = {
-            "1": {"field": "start_date", "mapping": "customfield_10015"},
-            "2": {"field": "due_date", "mapping": "duedate"},
-            "3": {"field": "created_on", "mapping": "customfield_10075"},
-            "4": {"field": "updated_on", "mapping": "customfield_10076"},
-            "5": {"field": "closed_on", "mapping": "customfield_10077"},
-            "6": {"field": "estimated_hours", "mapping": "customfield_10078"}
+            "subject": {"mapping": "summary", "type": str, "sanitize": True},
+            "description": {"mapping": "description", "type": str, "sanitize": True},
+            "author": {"mapping": "reporter", "type": dict, "sanitize": True},
+            "assigned_to": {"mapping": "assignee", "type": dict, "sanitize": True},
+            "project": {"mapping": "project", "type": dict, "sanitize": True},  # Assuming project maps to category
+            "priority": {"mapping": "priority", "type": dict, "sanitize": True},
+            "start_date": {"mapping": "customfield_10015", "type": str, "sanitize": False},
+            "due_date": {"mapping": "duedate", "type": str, "sanitize": False},
+            "created_on": {"mapping": "customfield_10075", "type": str, "sanitize": False},
+            "updated_on": {"mapping": "customfield_10076", "type": str, "sanitize": False},
+            "closed_on": {"mapping": "customfield_10077", "type": str, "sanitize": False},
+            "estimated_hours": {"mapping": "customfield_10078", "type": int, "sanitize": False},
+            "labels": {"mapping": "labels", "type": list, "sanitize": True},  # For Labels, it will depend on how those are structured in your input
+            "fix_versions": {"mapping": "fixVersions", "type": list, "sanitize": True},  # For Fix Versions, it will depend on how those are structured in your input
+            "attachments": {"mapping": "attachments", "type": list, "sanitize": True},  # For Attachments, may require special handling, depending on their structure
+            "journals": {"mapping": "journals", "type": list, "sanitize": True},  # For Journals, may require special handling, depending on their structure
         }
 
-        # will be removed in future updates
-        # self.status_mappings = {
-        #     "New": "1",
-        #     "In Progress": "2",
-        #     "Ready For Testing": "3",
-        #     "Feedback": "4",
-        #     "Closed": "5",
-        #     "Rejected": "6",
-        #     "Approved": "7",
-        #     "Re-Opened": "8",
-        #     "Won't Fix": "9",
-        #     "On Hold": "10",
-        #     "In Review": "11"
-        # }
+        self.status_mappings = {
+            "New": {"mapping": "1", "type": int, "sanitize": False},
+            "In Progress": {"mapping": "2", "type": int, "sanitize": False},
+            "Ready For Testing": {"mapping": "3", "type": int, "sanitize": False},
+            "Feedback": {"mapping": "4", "type": int, "sanitize": False},
+            "Closed": {"mapping": "5", "type": int, "sanitize": False},
+            "Rejected": {"mapping": "6", "type": int, "sanitize": False},
+            "Approved": {"mapping": "7", "type": int, "sanitize": False},
+            "Re-Opened": {"mapping": "8", "type": int, "sanitize": False},
+            "Won't Fix": {"mapping": "9", "type": int, "sanitize": False},
+            "On Hold": {"mapping": "10", "type": int, "sanitize": False},
+            "In Review": {"mapping": "11", "type": int, "sanitize": False},
+        }
 
+        self.priority_mappings = {
+            "(1) Immediate": {"mapping": "Highest", "type": str, "sanitize": False},
+            "(2) Urgent": {"mapping": "High", "type": str, "sanitize": False},
+            "(3) High": {"mapping": "Medium", "type": str, "sanitize": False},
+            "(4) Normal": {"mapping": "Low", "type": str, "sanitize": False},
+            "(5) Low": {"mapping": "Lowest", "type": str, "sanitize": False},
+        }
+
+    def log_response_content(self, response):
+        self.logger.error(JiraImporter.RESPONSE_CONTENT_TEMPLATE, response.content.decode())
+
+    def validate_input(self, input_data, input_types):
+        if isinstance(input_data, input_types):
+            return True
+        else:
+            return False
+
+    def sanitize_input(self, input_data):
+        if isinstance(input_data, str):
+            return html.escape(input_data)
+        else:
+            return input_data
 
     def get_field_id(self, field_name):
         response = requests.get(f"{self.jira_url}field", auth=self.auth)
@@ -115,20 +160,33 @@ class JiraImporter:
                 return field["id"]
         return None
 
-    def set_field_value(self, jira_issue, field_name, field_value):
-        field_id = self.get_field_id(field_name)
-        if field_id:
-            jira_issue["fields"][field_id] = field_value
-            self.logger.info(f"Field value set successfully for field: {field_name}")
+    def set_field_value(self, jira_issue, field_name, value, field_mapping_dict):
+        if field_name in field_mapping_dict:
+            field_id = field_mapping_dict[field_name]["mapping"]
+
+            # Validate the input based on its expected type
+            if not self.validate_input(value, field_mapping_dict[field_name]["type"]):
+                self.logger.error(f"Invalid type for {field_name}: {value}")
+                return
+
+            # If sanitize flag is set to True, sanitize the value
+            if field_mapping_dict[field_name]["sanitize"]:
+                value = self.sanitize_input(value)
+
+            # Set the value in jira_issue
+            jira_issue["fields"][field_id] = value
         else:
-            raise KeyError(f"Failed to set field value for field: {field_name}")
+            self.logger.error(f"Field mapping not found for field name: {field_name}")
 
     def get_user(self, username):
-        headers = {"Accept": "application/json"}
+        if not self.validate_input(username, str):
+            raise ValueError(f'Invalid username: {username}')
 
+        sanitized_username = self.sanitize_input(username)
+        headers = {"Accept": "application/json"}
         response = requests.request(
             "GET",
-            self.jira_url + "user/search?query=" + username,
+            self.jira_url + "user/search?query=" + sanitized_username,
             headers=headers,
             auth=self.auth
         )
@@ -153,128 +211,274 @@ class JiraImporter:
                 return transition['id']
         return None
 
-    def log_response_content(self, response):
-        self.logger.error(JiraImporter.RESPONSE_CONTENT_TEMPLATE, response.content.decode())
+    def handle_http_error(self, e, error_message):
+        if e.response.status_code == 400:
+            raise JiraBadRequestError('Bad request') from e
+        elif e.response.status_code == 401:
+            raise JiraAuthenticationError('Invalid Jira credentials') from e
+        elif e.response.status_code == 403:
+            raise JiraPermissionError('Jira permission error') from e
+        elif e.response.status_code == 404:
+            raise JiraNotFoundError('Jira issue not found') from e
+        elif e.response.status_code == 408:
+            raise JiraRequestTimeoutError('Request Timeout') from e
+        elif e.response.status_code == 429:
+            raise JiraTooManyRequestsError('Too Many Requests') from e
+        elif 500 <= e.response.status_code < 600:
+            raise JiraServerError('Server Error') from e
+        else:
+            self.logger.error(f"{error_message}. Error: {str(e)}")
+            self.log_response_content(e.response)
+            raise JiraExportError('Jira import error') from e
 
-    def import_to_jira(self, issue_data):
-        issue_data["issue"]["subject"] = issue_data["issue"]["subject"].encode('utf-8').decode()
-        issue_data["issue"]["description"] = issue_data["issue"]["description"].encode('utf-8').decode()
+    def is_allowed_file_type(self, filepath):
+        mime_type, _ = mimetypes.guess_type(filepath)
+        if mime_type:
+            file_type = mime_type.split('/')[1]
+            return file_type in self.allowed_file_types
+        else:
+            return False
 
-        jira_issue = {
-            "fields": {
-                "project": {
-                    "key": self.jira_project_key
-                },
-                "summary": issue_data["issue"]["subject"],
-                "description": issue_data["issue"]["description"],
-                "issuetype": {
-                    "name": issue_data["issue"]["tracker"]["name"]
-                }
-            }
-        }
+    # This is a placeholder for malware checking logic
+    def is_malware_infected(self):
+        return True
 
-        if issue_data["issue"].get("author"):
-            old_reporter_name = issue_data["issue"]["author"]["name"]
-            try:
-                new_reporter_name = self.get_user(old_reporter_name)
-                if new_reporter_name:
-                    jira_issue["fields"]["reporter"] = {
-                        "id": new_reporter_name["accountId"]
-                    }
-                else:
-                    self.logger.warn(f"Could not find a reporter with name: {old_reporter_name}")
-                    jira_issue["fields"]["reporter"] = {
-                        "name": "Anonymous",
-                        "id": "63776502489de2f7f46267eb"
-                    }
-            except Exception as e:
-                self.logger.error(f"Could not set reporter: {str(e)}")
+    def handle_reporter(self, issue_data, jira_issue):
+        reporter_info = issue_data["issue"].get("author")
+        if not reporter_info:
+            self.logger.warn(f"No reporter found for issue {issue_data['issue']['id']}")
+            return
 
-        if issue_data["issue"].get("assigned_to"):
-            old_assignee_name = issue_data["issue"]["assigned_to"]["name"]
-            try:
-                new_assignee_name = self.get_user(old_assignee_name)
-                if new_assignee_name:
-                    jira_issue["fields"]["assignee"] = {
-                        "id": new_assignee_name["accountId"]
-                    }
-                else:
-                    self.logger.warn(f"Could not find an assignee with name {old_assignee_name}")
-            except Exception as e:
-                self.logger.error(f"Could not set assignee: {str(e)}")
+        old_reporter_name = reporter_info.get("name")
+        if not old_reporter_name:
+            self.logger.warn(f"No reporter name found for issue {issue_data['issue']['id']}")
+            return
 
-        if issue_data["issue"].get("priority"):
-            old_priority_name = issue_data["issue"]["priority"]["name"]
-            new_priority_name = self.priority_mappings.get(old_priority_name, old_priority_name)
-            jira_issue["fields"]["priority"] = {
-                "name": new_priority_name
-            }
+        try:
+            new_reporter = self.get_user(old_reporter_name)
+            if not new_reporter:
+                self.logger.warn(f"Could not find reporter with the name ({old_reporter_name}) for issue {issue_data['issue']['id']}")
+                default_user_name = "Anonymous"
+                default_user_id = "63776502489de2f7f46267eb"
+                jira_issue["fields"]["reporter"] = {"name": default_user_name, "id": default_user_id}
+                self.logger.warn(f"Setting reporter to default ({default_user_name}) for issue: {issue_data['issue']['id']}")
+                return
 
-        category = issue_data["issue"].get("category")
+            reporter_id = new_reporter.get("accountId")
+            if not reporter_id:
+                self.logger.warn(f"Could not find account ID for reporter ({old_reporter_name}) for issue {issue_data['issue']['id']}")
+                return
+
+            jira_issue["fields"]["reporter"] = {"id": reporter_id}
+            self.logger.info(f"Setting of reporter ({reporter_id}) completed for issue: {issue_data['issue']['id']}")
+        except Exception as e:
+            self.logger.error(f"Could not set reporter due to error: {str(e)} for issue: {issue_data['issue']['id']}")
+
+    def handle_assignee(self, issue_data, jira_issue):
+        assignee_info = issue_data["issue"].get("assigned_to")
+        if not assignee_info:
+            self.logger.warn(f"No assignee found for issue {issue_data['issue']['id']}")
+            return
+
+        old_assignee_name = assignee_info.get("name")
+        if not old_assignee_name:
+            self.logger.warn(f"No assignee name found for issue {issue_data['issue']['id']}")
+            return
+
+        try:
+            new_assignee = self.get_user(old_assignee_name)
+            if not new_assignee:
+                self.logger.warn(f"Could not find assignee with the name ({old_assignee_name}) for issue {issue_data['issue']['id']}")
+                jira_issue["fields"]["assignee"] = None
+                self.logger.warn(f"Setting assignee to default (Unassigned) for issue: {issue_data['issue']['id']}")
+                return
+
+            assignee_id = new_assignee.get("accountId")
+            if not assignee_id:
+                self.logger.warn(f"Could not find account ID for assignee ({old_assignee_name}) for issue {issue_data['issue']['id']}")
+                return
+
+            jira_issue["fields"]["assignee"] = {"id": assignee_id}
+            self.logger.info(f"Setting of assignee ({assignee_id}) completed for issue: {issue_data['issue']['id']}")
+        except Exception as e:
+            self.logger.error(f"Could not set assignee due to error: {str(e)} for issue: {issue_data['issue']['id']}")
+
+    def handle_priority(self, issue_data, jira_issue):
+        field_name = "priority"
+        old_priority = issue_data["issue"].get(field_name)
+        
+        if old_priority and old_priority.get("name"):
+            old_priority_name = old_priority["name"]
+
+            # Check if old_priority_name exists in priority_mappings
+            if old_priority_name in self.priority_mappings:
+                new_priority_name = self.priority_mappings[old_priority_name]["mapping"]
+
+                # If sanitize flag is set to True, sanitize the value
+                if self.priority_mappings[old_priority_name]["sanitize"]:
+                    new_priority_name = self.sanitize_input(new_priority_name)
+
+                # Build a dictionary to fit Jira's expected format for priority field
+                new_priority_value = {"name": new_priority_name}
+
+                # Use set_field_value to handle setting the value and error handling
+                self.set_field_value(jira_issue, field_name, new_priority_value, self.fields_mappings)
+
+    def handle_category(self, issue_data, jira_issue):
+        field_name = "category"
+        category = issue_data["issue"].get(field_name)
+        
         if category and "name" in category:
             category_name = category["name"].strip()
             if " " in category_name:
                 category_name = category_name.replace(" ", "_")
-            jira_issue["fields"]["labels"] = [category_name]
+            
+            # Use set_field_value to handle setting the value and error handling
+            self.set_field_value(jira_issue, "labels", [category_name], self.fields_mappings)
         else:
-            jira_issue["fields"]["labels"] = []
+            self.set_field_value(jira_issue, "labels", [], self.fields_mappings)
 
-        if issue_data["issue"].get("start_date"):
-            field_value = issue_data["issue"]["start_date"]
-            try:
-                self.set_field_value(jira_issue, "Start date", field_value)
-            except KeyError as e:
-                self.logger.error(str(e))
+    def handle_start_date(self, issue_data, jira_issue):
+        field_name = "start_date"
+        if issue_data["issue"].get(field_name):
+            field_value = issue_data["issue"][field_name]
+            self.set_field_value(jira_issue, field_name, field_value, self.fields_mappings)
 
-        if issue_data["issue"].get("due_date"):
-            field_value = issue_data["issue"]["due_date"]
-            try:
-                self.set_field_value(jira_issue, "Due date", field_value)
-            except KeyError as e:
-                self.logger.error(str(e))
+    def handle_duedate(self, issue_data, jira_issue):
+        field_name = "due_date"
+        if issue_data["issue"].get(field_name):
+            field_value = issue_data["issue"][field_name]
+            self.set_field_value(jira_issue, field_name, field_value, self.fields_mappings)
 
-        # needs rework
-        if issue_data["issue"].get("created_on"):
-            field_name = "created_on"
-            field_id = self.field_mappings.get(field_name)
-            if field_id:
-                jira_issue["fields"][field_id] = issue_data["issue"]["created_on"]
-            else:
-                self.logger.error(f"Field ID not found for field name: {field_name}")
+    def handle_created_on(self, issue_data, jira_issue):
+        field_name = "created_on"
+        if issue_data["issue"].get(field_name):
+            field_value = issue_data["issue"][field_name]
+            self.set_field_value(jira_issue, field_name, field_value, self.fields_mappings)
 
-        if issue_data["issue"].get("updated_on"):
-            field_name = "updated_on"
-            field_id = self.field_mappings.get(field_name)
-            if field_id:
-                jira_issue["fields"][field_id] = issue_data["issue"]["updated_on"]
-            else:
-                self.logger.error(f"Field ID not found for field name: {field_name}")
+    def handle_updated_on(self, issue_data, jira_issue):
+        field_name = "updated_on"
+        if issue_data["issue"].get(field_name):
+            field_value = issue_data["issue"][field_name]
+            self.set_field_value(jira_issue, field_name, field_value, self.fields_mappings)
 
-        if issue_data["issue"].get("closed_on"):
-            field_name = "closed_on"
-            field_id = self.field_mappings.get(field_name)
-            if field_id:
-                jira_issue["fields"][field_id] = issue_data["issue"]["closed_on"]
-            else:
-                self.logger.error(f"Field ID not found for field name: {field_name}")
+    def handle_closed_on(self, issue_data, jira_issue):
+        field_name = "closed_on"
+        if issue_data["issue"].get(field_name):
+            field_value = issue_data["issue"][field_name]
+            self.set_field_value(jira_issue, field_name, field_value, self.fields_mappings)
 
-        if issue_data["issue"].get("estimated_hours"):
-            field_name = "estimated_hours"
-            field_id = self.field_mappings.get(field_name)
-            if field_id:
-                jira_issue["fields"][field_id] = issue_data["issue"]["estimated_hours"]
-            else:
-                self.logger.error(f"Field ID not found for field name: {field_name}")
-        ####
+    def handle_dates(self, issue_data, jira_issue):
+        self.handle_start_date(issue_data, jira_issue)
+        self.handle_duedate(issue_data, jira_issue)
+        self.handle_created_on(issue_data, jira_issue)
+        self.handle_updated_on(issue_data, jira_issue)
+        self.handle_closed_on(issue_data, jira_issue)
 
-        if issue_data["issue"].get("estimated_hours"):
-            field_value = issue_data["issue"]["estimated_hours"]
-            try:
-                self.set_field_value(jira_issue, "Estimated hours", field_value)
-            except KeyError as e:
-                self.logger.error(str(e))
+    def handle_estimated_hours(self, issue_data, jira_issue):
+        field_name = "estimated_hours"
+        if issue_data["issue"].get(field_name):
+            field_value = issue_data["issue"][field_name]
+            self.set_field_value(jira_issue, field_name, field_value, self.fields_mappings)
 
+    def handle_attachments(self, issue_key, issue_data):
+        if not self.validate_input(issue_data["attachments"], list):
+            self.logger.error(f"Invalid type for attachments: {issue_data['attachments']}")
+            return
+
+        for attachment in issue_data["attachments"]:
+            attachment_path = os.path.join(self.attachments_dir, str(issue_data["issue"]["id"]), attachment)
+            if not os.path.isfile(attachment_path):
+                self.logger.warn(f"Attachment file not found: {attachment_path}")
+                continue
+
+            # File size check
+            if os.path.getsize(attachment_path) > int(self.maximum_file_size):
+                self.logger.error(f"Attachment file is too large: {attachment_path}")
+                continue
+
+            # File type check
+            if not self.is_allowed_file_type(attachment_path):
+                self.logger.error(f"Disallowed file type in attachment: {attachment_path}")
+                continue
+
+            # File name sanitization
+            sanitized_filename = self.sanitize_input(attachment)
+
+            # malware check logic
+            # if not self.is_malware_infected(attachment_path):
+            #     self.logger.error(f"Attachment file contains malware: {attachment_path}")
+            #     continue
+
+            with open(attachment_path, "rb") as file:
+                try:
+                    response = requests.post(
+                        f"{self.jira_url}issue/{issue_key}/attachments",
+                        headers={"X-Atlassian-Token": "no-check"},
+                        files={"file": (sanitized_filename, file)},
+                        auth=self.auth
+                    )
+                    response.raise_for_status()
+                except requests.HTTPError as e:
+                    self.handle_http_error(e, f"Error occurred while uploading attachment to Jira issue {issue_key}")
+                except Exception as e:
+                    self.logger.error(f"Error occurred while uploading attachment to Jira issue {issue_key}. Error: {str(e)}")
+                    raise JiraAttachmentError(f"Uploading attachment failed for issue {issue_data['issue']['id']}") from e
+
+    def handle_journals(self, journal, issue_key):
+        if not self.validate_input(journal, dict):
+            self.logger.error(f"Invalid type for journal: {journal}")
+            return
+
+        comment_body = journal["notes"]
+        if not comment_body:
+            return
+
+        comment_body = self.sanitize_input(comment_body)
+
+        jira_comment = {
+            "body": comment_body
+        }
+
+        try:
+            response = requests.post(f"{self.jira_url}issue/{issue_key}/comment", auth=self.auth, json=jira_comment)
+            response.raise_for_status()
+            self.logger.info(f"Successfully uploaded journal comment for issue: {issue_key}")
+        except requests.HTTPError as e:
+            self.handle_http_error(e, f"Failed to add comment for issue {issue_key}")
+        except Exception as e:
+            self.logger.error(f"Failed to add comment for issue {issue_key}: {str(e)}")
+            raise JiraExportError(f"Failed to add comment for issue {issue_key}")
+
+    def issues_setup(self, issue_data):
         with self.rate_limiter:
+            if not self.validate_input(issue_data, dict):
+                raise ValueError(f'Invalid issue data: {issue_data}')
+
+            sanitized_issue_data = copy.deepcopy(issue_data)
+            sanitized_issue_data["issue"]["subject"] = self.sanitize_input(sanitized_issue_data["issue"]["subject"])
+            sanitized_issue_data["issue"]["description"] = self.sanitize_input(sanitized_issue_data["issue"]["description"])
+
+            jira_issue = {
+                "fields": {
+                    "project": {
+                        "key": self.jira_project_key
+                    },
+                    "summary": issue_data["issue"]["subject"],
+                    "description": issue_data["issue"]["description"],
+                    "issuetype": {
+                        "name": issue_data["issue"]["tracker"]["name"]
+                    }
+                }
+            }
+
+            self.handle_reporter(issue_data, jira_issue)
+            self.handle_assignee(issue_data, jira_issue)
+            self.handle_dates(issue_data, jira_issue)
+            self.handle_priority(issue_data, jira_issue)
+            self.handle_category(issue_data, jira_issue)
+            self.handle_estimated_hours(issue_data, jira_issue)
+
             try:
                 response = requests.post(f"{self.jira_url}issue/", auth=self.auth, json=jira_issue)
                 response.raise_for_status()
@@ -285,14 +489,12 @@ class JiraImporter:
                     self.logger.error("Could not decode JSON response: %s", response.text)
                     return
 
-                # upload attachments
                 if issue_data.get("attachments"):
-                    self.upload_attachments_to_issue(jira_issue_key, issue_data)
+                    self.handle_attachments(jira_issue_key, issue_data)
 
-                # upload comments
                 if issue_data.get("journals"):
                     for journal in issue_data["journals"]:
-                        self.upload_journal_comment_to_issue(journal, jira_issue_key)
+                        self.handle_journals(journal, jira_issue_key)
 
                 # Transform the status after the issue is created
                 status_name = issue_data["issue"]["status"]["name"]
@@ -311,77 +513,16 @@ class JiraImporter:
                         transition_response.raise_for_status()
                         self.logger.info(f"Status transformed successfully for issue: {issue_data['issue']['id']}")
                     except requests.HTTPError as e:
-                        self.logger.error(f"Failed to transform status for issue: {issue_data['issue']['id']}: {str(e)}")
-                        self.logger.error(f"Response content: {e.response.content.decode()}")
+                        self.handle_http_error(e, f"Failed to transform status for issue: {issue_data['issue']['id']}: {str(e)}")
 
                 self.logger.info(f"Successfully created issue {issue_data['issue']['id']} in JIRA with key {jira_issue_key}")
-
+                self.logger.info("-"*50)  # Add separator line at the end of processing an issue
+                    
             except requests.HTTPError as e:
-                if e.response.status_code == 401:
-                    raise JiraAuthenticationError('Invalid Jira credentials')
-                elif e.response.status_code == 403:
-                    raise JiraPermissionError('Jira permission error')
-                elif e.response.status_code == 404:
-                    raise JiraNotFoundError('Jira issue not found')
-                else:
-                    self.logger.error("An error occurred during Jira import: %s", str(e))
-                    # Use the constant for the response content
-                    self.log_response_content(e.response)
-                    raise JiraExportError('Jira import error')
+                self.handle_http_error(e, f"Failed creating issue {issue_data['issue']['id']} in JIRA with key {jira_issue_key}")
             except Exception as e:
                 self.logger.error("An error occurred during Jira import: %s", str(e))
                 raise JiraExportError('Jira import error')
-
-    def upload_attachments_to_issue(self, issue_key, issue_data):
-        for attachment in issue_data["attachments"]:
-            attachment_path = os.path.join(self.attachments_dir, str(issue_data["issue"]["id"]), attachment)
-            if not os.path.isfile(attachment_path):
-                self.logger.warn(f"Attachment file not found: {attachment_path}")
-                continue
-
-            with open(attachment_path, "rb") as file:
-                try:
-                    response = requests.post(
-                        f"{self.jira_url}issue/{issue_key}/attachments",
-                        headers={"X-Atlassian-Token": "no-check"},
-                        files={"file": file},
-                        auth=self.auth
-                    )
-                    response.raise_for_status()
-                except requests.HTTPError as e:
-                    self.logger.error(f"Error occurred while uploading attachment to Jira issue {issue_key}. Error: {str(e)}")
-                    # Use the constant for the response content
-                    self.log_response_content(e.response)
-                    if e.response.status_code == 401:
-                        raise JiraAuthenticationError('Invalid Jira credentials')
-                    elif e.response.status_code == 403:
-                        raise JiraPermissionError('Jira permission error')
-                    else:
-                        raise JiraAttachmentError(f"Uploading attachment failed for issue {issue_data['issue']['id']}") from e
-
-
-    def upload_journal_comment_to_issue(self, journal, issue_key):
-        comment_body = journal["notes"]
-        if not comment_body:
-            return
-
-        jira_comment = {
-            "body": comment_body
-        }
-
-        with self.rate_limiter:
-            try:
-                response = requests.post(f"{self.jira_url}issue/{issue_key}/comment", auth=self.auth, json=jira_comment)
-                response.raise_for_status()
-                self.logger.info(f"Successfully uploaded journal comment for issue: {issue_key}")
-            except requests.HTTPError as e:
-                self.logger.error(f"Failed to add comment for issue {issue_key}: {str(e)}")
-                # Use the constant for the response content
-                self.log_response_content(e.response)
-                raise JiraExportError(f"Failed to add comment for issue {issue_key}")
-            except Exception as e:
-                self.logger.error(f"Failed to add comment for issue {issue_key}: {str(e)}")
-                raise JiraExportError(f"Failed to add comment for issue {issue_key}")
 
     def import_issues(self, filename):
         checkpoint_file = "issue_progress.log"
@@ -425,7 +566,7 @@ class JiraImporter:
 
                     try:
                         issue_data = json.loads(line)
-                        self.import_to_jira(issue_data)
+                        self.issues_setup(issue_data)
                     except Exception as e:
                         self.logger.error("An error occurred during issue import: %s", str(e))
                         self.logger.error("Skipping issue data: %s", line)
@@ -439,6 +580,8 @@ class JiraImporter:
             sys.exit(0)
 
     def run(self, args):
+        configure_logging(args.debug)
+        
         if args.project and not args.activate_extraction:
             extracted_issues = []
             self.logger.info(f"Extracted {len(extracted_issues)} issues for project: {args.project}")
