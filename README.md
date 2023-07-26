@@ -10,17 +10,17 @@ pip install -r requirements.txt
 ```
 
 ### List of Available Arguments
-- -x, --activate-extraction [Activate and import already extracted issues]
+- -x, --activate-extraction [Activate and import already extracted issues] <- will be modified in future updates
 - -f, --filename [Specify the issues JSON file name for import]
 - -p, --project [Fetch issues for a specific project]
-- -a, --attachments [Export attachments] <- Feature Functionality still missing
-- -c, --comments [Export comments] <- Feature Functionality still missing
-- -s, --status [Filter issues by status: 1 (new), 2 (inprogress), 3 (resolved), 4 (feedback), 5 (closed), 6 (rejected), 7 (approved), 8 (won't fix), 9 (re-opened), 10 (in view), 11 (ready for testing)]
-- -pr, --priority [Filter issues by priority: 1 (low), 2 (normal), 3 (high), 4 (urgent)]
-- -d, --debug [Enable debug mode (verbose logging)]
+- -a, --attachments [Export attachments] <- will be modified in future updates
+- -c, --comments [Export comments] <- will be modified in future updates
+- -s, --status [Filter issues by status: 1 (New), 2 (In Progress), 3 (Ready For Testing), 4 (Feedback), 5 (Closed), 6 (Rejected), 7 (Approved), 8 (Re-Opened), 9 (Won't Fix), 10 (On Hold), 11 (In Review)]
+- -pr, --priority [Filter issues by priority: 1 (Highest), 2 (High), 3 (Medium), 4 (Low), 5 (Lowest)]
+- -d, --debug [Enable debug mode (verbose logging)] <- will be modified in future updates
 
 ___
-*Features*:
+*Implementations*: (under dev)
 - [x] `importer class`
 - [x] `exporter class`
 - [x] `ranges`
@@ -37,7 +37,8 @@ ___
 - [x] `appropriate abstractions`
 - [x] `improvement of readability`
 - [x] `rate limiter optimization`
-- [x] `memory implementation`
+- [x] `logging optimization`
+- [x] `memory progress`
 ___
 
 **YOU DO NOT HAVE PERMISSION TO MODIFY THIS PROJECT'S CORE FUNCTIONALITY WITHOUT A PROPER CONSENT**
