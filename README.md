@@ -23,19 +23,19 @@ ___
 *Features*:
 - [x] `importer class`
 - [x] `exporter class`
-- [ ] `ranges`
+- [x] `ranges`
 - [ ] `threads`
 - [ ] `workers`
 - [ ] `chunks`
 - [x] `refined attachments`
-- [ ] `categorization`
-- [ ] `prioritization`
+- [x] `categorization`
+- [x] `prioritization`
 - [x] `improved exception handling`
 - [x] `improved logging handling`
 - [x] `encapsulation`
-- [ ] `simplification for conditional logic`
-- [ ] `appropriate abstractions`
-- [ ] `improvement of readability`
+- [x] `simplification for conditional logic`
+- [x] `appropriate abstractions`
+- [x] `improvement of readability`
 - [x] `rate limiter optimization`
 - [x] `memory implementation`
 ___
