@@ -44,10 +44,10 @@ class RedmineExporter:
             self.redmine_url = config.get('Redmine', 'url')
             self.redmine_api_key = config.get('Redmine', 'api_key')
             self.attachments_dir = config.get('Exporter', 'attachments_dir')
-            self.rate_limit_delay = config.getint('Exporter', 'rate_limit_delay')
+            self.rate_limit = config.getint('General', 'rate_limit')
             self.maximum_issues = config.getint('Exporter', 'maximum_issues')
 
-            self.rate_limiter = RateLimiter(self.rate_limit_delay)
+            self.rate_limiter = RateLimiter(self.rate_limit)
             self.logger = setup_logger('exporter', self.log_dir, self.log_file)
         except ConfigParser.NoSectionError as e:
             raise RedmineExportError(f"Error in configuration file: {str(e)}")
@@ -55,6 +55,14 @@ class RedmineExporter:
             raise RedmineExportError(f"Missing required option in configuration file: {str(e)}")
         except Exception as e:
             raise RedmineExportError(f"Error reading configuration: {str(e)}")
+
+        self.priority_map = {
+            1: '1',  # Low priority
+            2: '2',  # Normal priority
+            3: '3',  # High priority
+            4: '4',  # Urgent priority
+            5: '5'   # Immediate priority
+        }
 
         self.status_map = {
             1: '1',   # New issues (The issue is newly created and not yet assigned or in progress.)
@@ -84,14 +92,6 @@ class RedmineExporter:
             10: 'On-Hold',
             11: 'Resolved',
             12: 'In View'
-        }
-
-        self.priority_map = {
-            1: '1',  # Low priority
-            2: '2',  # Normal priority
-            3: '3',  # High priority
-            4: '4',  # Urgent priority
-            5: '5'   # Immediate priority
         }
 
     def validate_input(self, input_data, input_types):
@@ -416,7 +416,7 @@ class RedmineExporter:
         issues = self.fetch_issues(args.project, args.status, args.priority)
         self.logger.info(f"Total issues found: {len(issues)}")
 
-        rate_limiter = RateLimiter(self.rate_limit_delay)
+        rate_limiter = RateLimiter(self.rate_limit)
 
         try:
             for i, issue in enumerate(issues[current_issue_index:], current_issue_index + 1):
